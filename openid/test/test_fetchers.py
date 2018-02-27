@@ -1,9 +1,11 @@
+import responses
 import socket
 import unittest
 import urllib2
 import warnings
 from BaseHTTPServer import BaseHTTPRequestHandler, HTTPServer
 from cStringIO import StringIO
+from requests.exceptions import ConnectionError, InvalidSchema
 from urllib import addinfourl
 
 from mock import Mock
@@ -89,6 +91,7 @@ def run_fetcher_tests(server):
     for klass, library_name in [
         (fetchers.CurlHTTPFetcher, 'pycurl'),
         (fetchers.HTTPLib2Fetcher, 'httplib2'),
+        (fetchers.RequestsFetcher, 'requests'),
     ]:
         try:
             exc_fetchers.append(klass())
@@ -336,3 +339,46 @@ class TestSilencedUrllib2Fetcher(TestUrllib2Fetcher):
 
     fetcher = fetchers.ExceptionWrappingFetcher(fetchers.Urllib2Fetcher())
     invalid_url_error = fetchers.HTTPFetchingError
+
+
+class TestRequestsFetcher(unittest.TestCase):
+    """Test `RequestsFetcher` class."""
+
+    fetcher = fetchers.RequestsFetcher()
+
+    def test_success(self):
+        # Test success response
+        with responses.RequestsMock() as rsps:
+            rsps.add(responses.GET, 'http://example.cz/success/', status=200, body='BODY', headers={'Content-Type': 'text/plain'} )
+            response = self.fetcher.fetch('http://example.cz/success/')
+        expected = fetchers.HTTPResponse('http://example.cz/success/', 200, {'Content-Type': 'text/plain'}, 'BODY')
+        #assert len(responses.calls) == 1
+        assertResponse(expected, response)
+
+    def test_redirect(self):
+        # Test redirect response - a final response comes from another URL.
+        with responses.RequestsMock() as rsps:
+            rsps.add(responses.GET, 'http://example.cz/success/', status=200, body='BODY', headers={'Content-Type': 'text/plain'} )
+            response = self.fetcher.fetch('http://example.cz/redirect/')
+        expected = fetchers.HTTPResponse('http://example.cz/success/', 200, {'Content-Type': 'text/plain'}, 'BODY')
+        assertResponse(expected, response)
+
+    def test_error(self):
+        # Test error responses - returned as obtained
+        with responses.RequestsMock() as rsps:
+            rsps.add(responses.GET, 'http://example.cz/error/', status=500, body='BODY', headers={'Content-Type': 'text/plain'} )
+            response = self.fetcher.fetch('http://example.cz/error/')
+        expected = fetchers.HTTPResponse('http://example.cz/error/', 500, {'Content-Type': 'text/plain'}, 'BODY')
+        assertResponse(expected, response)
+
+    def test_invalid_url(self):
+        invalid_url = 'invalid://example.cz/'
+        with self.assertRaisesRegexp(InvalidSchema, "No connection adapters were found for '" + invalid_url + "'"):
+            self.fetcher.fetch(invalid_url)
+
+    def test_connection_error(self):
+        # Test connection error
+        with responses.RequestsMock() as rsps:
+            rsps.add(responses.GET, 'http://example.cz/', body=ConnectionError('Name or service not known'))
+            with self.assertRaisesRegexp(ConnectionError, 'Name or service not known'):
+                self.fetcher.fetch('http://example.cz/')
